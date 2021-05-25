@@ -1,22 +1,20 @@
-# Yolov5 + Deep Sort with PyTorch
+# Video to Geospatial with Yolov5 + Deep Sort
 
-[![HitCount](http://hits.dwyl.com/{mikel-brostrom}/{Yolov5_DeepSort_Pytorch}.svg)](http://hits.dwyl.com/{mikel-brostrom}/{Yolov5_DeepSort_Pytorch})
-
-
-![](Town.gif)
+![](documentation/Town.gif)
 
 ## Introduction
 
-This repository contains a moded version of PyTorch YOLOv5 (https://github.com/ultralytics/yolov5). It filters out every detection that is not a person. The detections of persons are then passed to a Deep Sort algorithm (https://github.com/ZQPei/deep_sort_pytorch) which tracks the persons. The reason behind the fact that it just tracks persons is that the deep association metric is trained on a person ONLY datatset.
+This tool tracks people on a video and convert them to a geospatial references.
 
-## Description
+This repository is based https://github.com/mikel-brostrom/Yolov5_DeepSort_Pytorch and contains a moded version of PyTorch YOLOv5 (https://github.com/ultralytics/yolov5). It filters out every detection that is not a person. The detections of persons are then passed to a Deep Sort algorithm (https://github.com/ZQPei/deep_sort_pytorch) which tracks the persons.
+*The reason behind the fact that it just tracks persons is that the deep association metric is trained on a person ONLY datatset.*
 
-The implementation is based on two papers:
-
-- Simple Online and Realtime Tracking with a Deep Association Metric
-https://arxiv.org/abs/1703.07402
-- YOLOv4: Optimal Speed and Accuracy of Object Detection
-https://arxiv.org/pdf/2004.10934.pdf
+It was developed as part of the Master in City and Technology - IAAC by:
+- Adriana Aguirre Such
+- Diana Roussi
+- Dongxuan Zhu
+- Hebah Qatanany
+- Tugdual Sarazin
 
 ## Requirements
 
@@ -41,23 +39,52 @@ If you already cloned and forgot to use `--recurse-submodules` you can run `git 
 - download the yolov5 weight from the latest realease https://github.com/ultralytics/yolov5/releases. Place the downlaoded `.pt` file under `yolov5/weights/`
 - download the deep sort weights from https://drive.google.com/drive/folders/1xhG0kRH1EX5B9_Iz8gQJb7UNnn_riXi6. Place ckpt.t7 file under`deep_sort/deep/checkpoint/`
 
-## Tracking
+## Configuration
 
-Tracking can be run on most video formats
+Configure the different files 
 
+The configuration is saved on the `config.py` file:
+
+````python
+class Config:
+    # Path of the video source file
+    video_path = 'data/bcn_jaume/jaume_5_10am.MOV'
+    # Path of the reference points
+    refpoints_geojson_path = 'data/bcn_jaume/jaume_5_10am_refpoints.geojson'
+    # Path of the transposition matrices
+    converter_path = 'data/bcn_jaume/jaume_5_10am_converter'
+    # Path where video geospatial tracking is saved   
+    history_geojson_path = 'data/bcn_jaume/jaume_5_10am_geohistory.geojson'
+    # Yolo detection threshold 
+    yolo_thres = 0.10
+````
+
+## Initialize the geospatial transposition
+
+**Configuration required for this:**
+- Config.refpoints_geojson_path
+- Config.video_path
+
+This step configures the transposition (video to geospatial) parameters file.
+It is done with the `configure_geo.py` program.
+It requires 4 geospatial points file (`Config.refpoints_geojson_path`), this file must contain 4 geospatial points (EPSG:4326).
+The user interface of the `configure_geo.py` helps you to set the position of these 4 points on the video (`Config.video_path`).
+It will save the transposition parameters in the file `Config.converter_path`.
+
+**Run it :**
 ```bash
-python3 track.py --source ...
+python configure_geo.py
 ```
 
-- Video:  `--source file.mp4`
-- Webcam:  `--source 0`
-- RTSP stream:  `--source rtsp://170.93.143.139/rtplive/470011e600ef003a004ee33696235daa`
-- HTTP stream:  `--source http://wmccpinetop.axiscam.net/mjpg/video.mjpg`
+## Tracking
 
-MOT compliant results can be saved to `inference/output` by 
+The tracking program identifies people on the video (`Config.video_path`), follows them and assigns them an **id**.
+The program save the analysis video in the folder `inference\output`. 
+The position of people is convert to the geospatial (epsg:4326) and save in the file `Config.history_geojson_path`.
 
+**Run it :**
 ```bash
-python3 track.py --source ... --save-txt
+python track.py
 ```
 
 ## Other information

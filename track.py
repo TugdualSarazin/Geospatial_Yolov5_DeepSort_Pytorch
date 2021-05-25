@@ -1,8 +1,14 @@
 import sys
+
+from config import Config
+from geo_history import GeoHistory
+
 sys.path.insert(0, './yolov5')
 
+from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
-from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords
+from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, \
+    check_imshow
 from yolov5.utils.torch_utils import select_device, time_synchronized
 from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
@@ -16,6 +22,7 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
@@ -54,7 +61,7 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
         color = compute_color_for_labels(id)
         label = '{}{:d}'.format("", id)
         t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 2, 2)[0]
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
         cv2.rectangle(
             img, (x1, y1), (x1 + t_size[0] + 3, y1 + t_size[1] + 4), color, -1)
         cv2.putText(img, label, (x1, y1 +
@@ -62,9 +69,23 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
     return img
 
 
-def detect(opt, save_img=False):
-    out, source, weights, view_img, save_txt, imgsz = \
-        opt.output, opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
+geo_history = GeoHistory(Config.converter_path)
+
+
+def draw_history(im0):
+    for pt in geo_history.features.features:
+        color = compute_color_for_labels(pt['properties']['user_id'])
+        x = pt['properties']['frame_x']
+        y = pt['properties']['frame_y']
+        cv2.circle(im0, (x, y), radius=2, color=color, thickness=-1)
+    return im0
+
+def detect(opt):
+    out, source, weights, view_vid, save_vid, save_txt, imgsz = \
+        opt.output, opt.source, opt.weights, opt.view_vid, opt.save_vid, opt.save_txt, opt.img_size
+    out = 'inference/output'
+    source = Config.video_path
+    save_vid = True
     webcam = source == '0' or source.startswith(
         'rtsp') or source.startswith('http') or source.endswith('.txt')
 
@@ -85,31 +106,32 @@ def detect(opt, save_img=False):
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
-    model = torch.load(weights, map_location=device)[
-        'model'].float()  # load to FP32
-    model.to(device).eval()
+    model = attempt_load(weights, map_location=device)  # load FP32 model
+    stride = int(model.stride.max())  # model stride
+    imgsz = check_img_size(imgsz, s=stride)  # check img_size
+    names = model.module.names if hasattr(model, 'module') else model.names  # get class names
     if half:
         model.half()  # to FP16
 
     # Set Dataloader
     vid_path, vid_writer = None, None
+    # Check if environment supports image displays
+    if view_vid:
+        view_vid = check_imshow()
+
     if webcam:
-        view_img = True
         cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=imgsz)
+        dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        view_img = True
-        save_img = True
         dataset = LoadImages(source, img_size=imgsz)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
 
     # Run inference
+    if device.type != 'cpu':
+        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
-    img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
-    # run once
-    _ = model(img.half() if half else img) if device.type != 'cpu' else None
 
     save_path = str(Path(out))
     txt_path = str(Path(out)) + '/results.txt'
@@ -126,8 +148,7 @@ def detect(opt, save_img=False):
         pred = model(img, augment=opt.augment)[0]
 
         # Apply NMS
-        pred = non_max_suppression(
-            pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
         t2 = time_synchronized()
 
         # Process detections
@@ -171,6 +192,9 @@ def detect(opt, save_img=False):
                     bbox_xyxy = outputs[:, :4]
                     identities = outputs[:, -1]
                     draw_boxes(im0, bbox_xyxy, identities)
+                    geo_history.add_points(frame_idx, bbox_xyxy, identities)
+                    #geo_history.save()
+                    draw_history(im0)
 
                 # Write MOT compliant results to file
                 if save_txt and len(outputs) != 0:
@@ -191,31 +215,32 @@ def detect(opt, save_img=False):
             print('%sDone. (%.3fs)' % (s, t2 - t1))
 
             # Stream results
-            if view_img:
+            if view_vid:
                 cv2.imshow(p, im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
 
             # Save results (image with detections)
-            if save_img:
-                print('saving img!')
-                if dataset.mode == 'images':
-                    cv2.imwrite(save_path, im0)
-                else:
-                    print('saving video!')
-                    if vid_path != save_path:  # new video
-                        vid_path = save_path
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
-
+            if save_vid:
+                if vid_path != save_path:  # new video
+                    vid_path = save_path
+                    if isinstance(vid_writer, cv2.VideoWriter):
+                        vid_writer.release()  # release previous video writer
+                    if vid_cap:  # video
                         fps = vid_cap.get(cv2.CAP_PROP_FPS)
                         w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        vid_writer = cv2.VideoWriter(
-                            save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
-                    vid_writer.write(im0)
+                    else:  # stream
+                        fps, w, h = 30, im0.shape[1], im0.shape[0]
+                        save_path += '.mp4'
 
-    if save_txt or save_img:
+                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                vid_writer.write(im0)
+
+    # Save geo_history
+    geo_history.save()
+
+    if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
@@ -242,7 +267,9 @@ if __name__ == '__main__':
                         help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='',
                         help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--view-img', action='store_true',
+    parser.add_argument('--view-vid', action='store_false',
+                        help='display results')
+    parser.add_argument('--save-vid', action='store_true',
                         help='display results')
     parser.add_argument('--save-txt', action='store_true',
                         help='save results to *.txt')
