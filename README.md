@@ -1,7 +1,5 @@
 # Video to Geospatial with Yolov5 + Deep Sort
 
-![](documentation/Town.gif)
-
 ## Introduction
 
 This tool tracks people on a video and convert them to a geospatial references.
@@ -49,12 +47,16 @@ The configuration is saved on the `config.py` file:
 class Config:
     # Path of the video source file
     video_path = 'data/bcn_jaume/jaume_5_10am.MOV'
+    # Path of the tracking video 
+    video_save_path = 'data/bcn_jaume/jaume_5_10am_tracking.MOV'
     # Path of the reference points
     refpoints_geojson_path = 'data/bcn_jaume/jaume_5_10am_refpoints.geojson'
     # Path of the transposition matrices
     converter_path = 'data/bcn_jaume/jaume_5_10am_converter'
     # Path where video geospatial tracking is saved   
     history_geojson_path = 'data/bcn_jaume/jaume_5_10am_geohistory.geojson'
+    # The frame frequency when the tracking is done
+    frame_rate = 10
     # Yolo detection threshold 
     yolo_thres = 0.10
 ````
@@ -64,6 +66,8 @@ class Config:
 **Configuration required for this:**
 - Config.refpoints_geojson_path
 - Config.video_path
+
+![](documentation/place_point_tool.png)
 
 This step configures the transposition (video to geospatial) parameters file.
 It is done with the `configure_geo.py` program.
@@ -78,8 +82,10 @@ python configure_geo.py
 
 ## Tracking
 
+![](documentation/people_tracking.gif)
+
 The tracking program identifies people on the video (`Config.video_path`), follows them and assigns them an **id**.
-The program save the analysis video in the folder `inference\output`. 
+The program save the analysis video in the `Config.video_save_path` file . 
 The position of people is convert to the geospatial (epsg:4326) and save in the file `Config.history_geojson_path`.
 
 **Run it :**

@@ -1,3 +1,4 @@
+import colorsys
 import sys
 
 from config import Config
@@ -27,6 +28,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 
+main_colors = [
+    (343 / 360, 78 / 100, 100 / 100),  # Pink(#ff386f)
+    (56 / 360, 79 / 100, 100 / 100),  # Yellow(#fff336)
+    (230 / 360, 59 / 100, 100 / 100),  # Blue(#6981ff)
+]
 
 def bbox_rel(*xyxy):
     """" Calculates the relative bounding box from absolute pixel values. """
@@ -41,13 +47,18 @@ def bbox_rel(*xyxy):
     return x_c, y_c, w, h
 
 
-def compute_color_for_labels(label):
+def compute_color_for_labels_old(label):
     """
     Simple function that adds fixed color depending on the class
     """
     color = [int((p * (label ** 2 - label + 1)) % 255) for p in palette]
     return tuple(color)
 
+def compute_color_for_labels(label):
+    hsv = main_colors[label % 3]
+    color = [int(c * 255) for c in colorsys.hsv_to_rgb(*hsv)]
+    color.reverse()
+    return color
 
 def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
     for i, box in enumerate(bbox):
@@ -137,105 +148,112 @@ def detect(opt):
     txt_path = str(Path(out)) + '/results.txt'
 
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
-        img = torch.from_numpy(img).to(device)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
-        if img.ndimension() == 3:
-            img = img.unsqueeze(0)
+        if frame_idx % Config.frame_rate == 0:
+            img = torch.from_numpy(img).to(device)
+            img = img.half() if half else img.float()  # uint8 to fp16/32
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            if img.ndimension() == 3:
+                img = img.unsqueeze(0)
 
-        # Inference
-        t1 = time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
+            # Inference
+            t1 = time_synchronized()
+            pred = model(img, augment=opt.augment)[0]
 
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t2 = time_synchronized()
+            # Apply NMS
+            #pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+            pred = non_max_suppression(pred, Config.yolo_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+            t2 = time_synchronized()
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if webcam:  # batch_size >= 1
-                p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
-            else:
-                p, s, im0 = path, '', im0s
+            # Process detections
+            for i, det in enumerate(pred):  # detections per image
+                if webcam:  # batch_size >= 1
+                    p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
+                else:
+                    p, s, im0 = path, '', im0s
 
-            s += '%gx%g ' % img.shape[2:]  # print string
-            save_path = str(Path(out) / Path(p).name)
+                s += '%gx%g ' % img.shape[2:]  # print string
+                #save_path = str(Path(out) / Path(p).name)
+                save_path = Config.video_save_path
 
-            if det is not None and len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(
-                    img.shape[2:], det[:, :4], im0.shape).round()
+                if det is not None and len(det):
+                    # Rescale boxes from img_size to im0 size
+                    det[:, :4] = scale_coords(
+                        img.shape[2:], det[:, :4], im0.shape).round()
 
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
+                    # Print results
+                    for c in det[:, -1].unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
-                bbox_xywh = []
-                confs = []
+                    bbox_xywh = []
+                    confs = []
 
-                # Adapt detections to deep sort input format
-                for *xyxy, conf, cls in det:
-                    x_c, y_c, bbox_w, bbox_h = bbox_rel(*xyxy)
-                    obj = [x_c, y_c, bbox_w, bbox_h]
-                    bbox_xywh.append(obj)
-                    confs.append([conf.item()])
+                    # Adapt detections to deep sort input format
+                    for *xyxy, conf, cls in det:
+                        x_c, y_c, bbox_w, bbox_h = bbox_rel(*xyxy)
+                        obj = [x_c, y_c, bbox_w, bbox_h]
+                        bbox_xywh.append(obj)
+                        confs.append([conf.item()])
 
-                xywhs = torch.Tensor(bbox_xywh)
-                confss = torch.Tensor(confs)
+                    xywhs = torch.Tensor(bbox_xywh)
+                    confss = torch.Tensor(confs)
 
-                # Pass detections to deepsort
-                outputs = deepsort.update(xywhs, confss, im0)
+                    # Pass detections to deepsort
+                    outputs = deepsort.update(xywhs, confss, im0)
 
-                # draw boxes for visualization
-                if len(outputs) > 0:
-                    bbox_xyxy = outputs[:, :4]
-                    identities = outputs[:, -1]
-                    draw_boxes(im0, bbox_xyxy, identities)
-                    geo_history.add_points(frame_idx, bbox_xyxy, identities)
-                    #geo_history.save()
-                    draw_history(im0)
+                    # Convert to gray scale
+                    im0 = cv2.cvtColor(im0, cv2.COLOR_BGR2GRAY)
+                    im0 = cv2.cvtColor(im0, cv2.COLOR_GRAY2BGR)
 
-                # Write MOT compliant results to file
-                if save_txt and len(outputs) != 0:
-                    for j, output in enumerate(outputs):
-                        bbox_left = output[0]
-                        bbox_top = output[1]
-                        bbox_w = output[2]
-                        bbox_h = output[3]
-                        identity = output[-1]
-                        with open(txt_path, 'a') as f:
-                            f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_left,
-                                                           bbox_top, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
+                    # draw boxes for visualization
+                    if len(outputs) > 0:
+                        bbox_xyxy = outputs[:, :4]
+                        identities = outputs[:, -1]
+                        draw_boxes(im0, bbox_xyxy, identities)
+                        geo_history.add_points(frame_idx, bbox_xyxy, identities)
+                        #geo_history.save()
+                        draw_history(im0)
 
-            else:
-                deepsort.increment_ages()
+                    # Write MOT compliant results to file
+                    if save_txt and len(outputs) != 0:
+                        for j, output in enumerate(outputs):
+                            bbox_left = output[0]
+                            bbox_top = output[1]
+                            bbox_w = output[2]
+                            bbox_h = output[3]
+                            identity = output[-1]
+                            with open(txt_path, 'a') as f:
+                                f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_left,
+                                                               bbox_top, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
 
-            # Print time (inference + NMS)
-            print('%sDone. (%.3fs)' % (s, t2 - t1))
+                else:
+                    deepsort.increment_ages()
 
-            # Stream results
-            if view_vid:
-                cv2.imshow(p, im0)
-                if cv2.waitKey(1) == ord('q'):  # q to quit
-                    raise StopIteration
+                # Print time (inference + NMS)
+                print('%sDone. (%.3fs)' % (s, t2 - t1))
 
-            # Save results (image with detections)
-            if save_vid:
-                if vid_path != save_path:  # new video
-                    vid_path = save_path
-                    if isinstance(vid_writer, cv2.VideoWriter):
-                        vid_writer.release()  # release previous video writer
-                    if vid_cap:  # video
-                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path += '.mp4'
+                # Stream results
+                if view_vid:
+                    cv2.imshow(p, im0)
+                    if cv2.waitKey(1) == ord('q'):  # q to quit
+                        raise StopIteration
 
-                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                vid_writer.write(im0)
+                # Save results (image with detections)
+                if save_vid:
+                    if vid_path != save_path:  # new video
+                        vid_path = save_path
+                        if isinstance(vid_writer, cv2.VideoWriter):
+                            vid_writer.release()  # release previous video writer
+                        if vid_cap:  # video
+                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        else:  # stream
+                            fps, w, h = 30, im0.shape[1], im0.shape[0]
+                            save_path += '.mp4'
+
+                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer.write(im0)
 
     # Save geo_history
     geo_history.save()
